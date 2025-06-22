@@ -32,11 +32,6 @@ import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
 import kotlin.math.*
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
@@ -72,35 +67,68 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
-        // Inicializar Firebase para sincronización en tiempo real
-        database = FirebaseDatabase.getInstance().reference
-        myLocationRef = database.child("locations").child("user1") // Mi ubicación
-        companionLocationRef = database.child("locations").child("user2") // Ubicación de mi compañero
-
         btnCalculate = findViewById(R.id.btnCalculateRoute)
-        btnAddLocation = findViewById(R.id.btnAddLocation) // Inicializar el nuevo botón
-        lvPosiciones = findViewById(R.id.lvposiciones) // Inicializar ListView
+        btnAddLocation = findViewById(R.id.btnAddLocation)
+        lvPosiciones = findViewById(R.id.lvposiciones)
 
-        // Inicializar adaptador para ListView para mostrar información
         infoAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf<String>())
         lvPosiciones.adapter = infoAdapter
 
         btnCalculate.setOnClickListener {
             poly?.remove()
             poly = null
-            findNearestToUni() // Nueva función para encontrar quién está más cerca de la UNI
+            findNearestToUni()
         }
 
-        // Listener para el botón de Añadir Ubicación (ahora para configurar nombre del compañero)
         btnAddLocation.setOnClickListener {
             showCompanionNameDialog()
         }
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        getCurrentLocation() // Obtener la ubicación actual al inicio
-        createMapFragment()
 
-        // Inicializar sincronización en tiempo real
+        // Mostrar diálogo para seleccionar usuario
+        showUserSelectionDialog()
+    }
+
+    private fun showUserSelectionDialog() {
+        Log.d("MainActivity", "Mostrando diálogo de selección de usuario")
+        
+        val users = arrayOf("Usuario 1", "Usuario 2")
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("¿Quién eres?")
+        builder.setMessage("Selecciona tu identidad para compartir ubicación:")
+        
+        builder.setPositiveButton("Usuario 1") { dialog, _ ->
+            Log.d("MainActivity", "Usuario seleccionado: user1")
+            setupUser("user1")
+            dialog.dismiss()
+        }
+        
+        builder.setNegativeButton("Usuario 2") { dialog, _ ->
+            Log.d("MainActivity", "Usuario seleccionado: user2")
+            setupUser("user2")
+            dialog.dismiss()
+        }
+        
+        builder.setCancelable(false)
+        val dialog = builder.create()
+        dialog.show()
+    }
+    
+    private fun setupUser(selectedUser: String) {
+        val companionUser = if (selectedUser == "user1") "user2" else "user1"
+        
+        // Configurar Firebase con el usuario seleccionado
+        database = FirebaseDatabase.getInstance().reference
+        myLocationRef = database.child("locations").child(selectedUser)
+        companionLocationRef = database.child("locations").child(companionUser)
+        
+        Toast.makeText(this, "Eres $selectedUser", Toast.LENGTH_SHORT).show()
+        Log.d("MainActivity", "Configurando Firebase para $selectedUser")
+        
+        // Inicializar la app
+        getCurrentLocation()
+        createMapFragment()
         initializeRealTimeSync()
     }
 
@@ -122,6 +150,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun createMarkers() {
+        // Verificar que el mapa esté inicializado antes de crear marcadores
+        if (!::map.isInitialized) {
+            return
+        }
+        
         // Limpiar marcadores existentes para evitar duplicados al actualizar
         map.clear()
 
@@ -156,6 +189,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         )
     }
 
+    // Función para calcular distancia en línea recta usando fórmula de Haversine
+    private fun calculateDistanceHaversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val R = 6371.0 // Radio de la Tierra en kilómetros
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+                cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
+                sin(dLon / 2) * sin(dLon / 2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return R * c
+    }
+
     // Nueva función para encontrar quién está más cerca de la UNI
     private fun findNearestToUni() {
         if (!::Miposicion.isInitialized) {
@@ -167,174 +212,44 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             return
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
-            var myDistanceToUni: Double = Double.MAX_VALUE
-            var companionDistanceToUni: Double = Double.MAX_VALUE
-            var bestRouteCoordinates: List<List<Double>>? = null
+        // Calcular distancia usando fórmula de Haversine (línea recta)
+        val myDistanceSimple = calculateDistanceHaversine(
+            Miposicion.latitude, Miposicion.longitude,
+            uniLocation.latitude, uniLocation.longitude
+        )
+        
+        val companionDistanceSimple = calculateDistanceHaversine(
+            companionLocation!!.latitude, companionLocation!!.longitude,
+            uniLocation.latitude, uniLocation.longitude
+        )
 
-            val apiService = getRetrofit().create(ApiService::class.java)
-
-            // Calcular distancia de mi ubicación a la UNI
-            val myStart = "${Miposicion.longitude},${Miposicion.latitude}"
-            val uniEnd = "${uniLocation.longitude},${uniLocation.latitude}"
-
-            try {
-                val myCall = apiService.getRoute("5b3ce3597851110001cf624826138ef006c74296adca414c449bc21e", myStart, uniEnd)
-                if (myCall.isSuccessful) {
-                    val myRouteResponse = myCall.body()
-                    myDistanceToUni = myRouteResponse?.features?.firstOrNull()?.properties?.summary?.distance ?: Double.MAX_VALUE
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error al calcular mi distancia a la UNI: ${e.message}")
-            }
-
-            // Calcular distancia de mi compañero a la UNI
-            val companionStart = "${companionLocation!!.longitude},${companionLocation!!.latitude}"
-
-            try {
-                val companionCall = apiService.getRoute("5b3ce3597851110001cf624826138ef006c74296adca414c449bc21e", companionStart, uniEnd)
-                if (companionCall.isSuccessful) {
-                    val companionRouteResponse = companionCall.body()
-                    companionDistanceToUni = companionRouteResponse?.features?.firstOrNull()?.properties?.summary?.distance ?: Double.MAX_VALUE
-                    bestRouteCoordinates = companionRouteResponse?.features?.firstOrNull()?.geometry?.coordinates
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error al calcular distancia de mi compañero a la UNI: ${e.message}")
-            }
-
-            // Comparar y mostrar resultado
-            runOnUiThread {
-                if (myDistanceToUni < Double.MAX_VALUE && companionDistanceToUni < Double.MAX_VALUE) {
-                    val myDistanceKm = myDistanceToUni / 1000
-                    val companionDistanceKm = companionDistanceToUni / 1000
-                    
-                    if (myDistanceKm < companionDistanceKm) {
-                        Toast.makeText(this@MainActivity, 
-                            "¡TÚ estás más cerca de la UNI! (${String.format("%.2f", myDistanceKm)} km vs ${String.format("%.2f", companionDistanceKm)} km)", 
-                            Toast.LENGTH_LONG).show()
-                        // Dibujar mi ruta a la UNI
-                        drawRouteFromMeToUni()
-                    } else {
-                        Toast.makeText(this@MainActivity, 
-                            "$companionName está más cerca de la UNI (${String.format("%.2f", companionDistanceKm)} km vs ${String.format("%.2f", myDistanceKm)} km)", 
-                            Toast.LENGTH_LONG).show()
-                        // Dibujar ruta del compañero a la UNI
-                        if (bestRouteCoordinates != null) {
-                            drawRoute(bestRouteCoordinates)
-                        }
-                    }
-                } else {
-                    Toast.makeText(this@MainActivity, "No se pudo calcular las distancias a la UNI.", Toast.LENGTH_LONG).show()
-                }
-            }
+        // Mostrar resultado
+        val resultMessage = if (myDistanceSimple < companionDistanceSimple) {
+            "¡TÚ estás más cerca de la UNI! (${String.format("%.2f", myDistanceSimple)} km vs ${String.format("%.2f", companionDistanceSimple)} km)"
+        } else {
+            "$companionName está más cerca de la UNI (${String.format("%.2f", companionDistanceSimple)} km vs ${String.format("%.2f", myDistanceSimple)} km)"
         }
+        
+        Toast.makeText(this, resultMessage, Toast.LENGTH_LONG).show()
+        
+        // Dibujar línea recta al ganador
+        drawStraightLineToUni(if (myDistanceSimple < companionDistanceSimple) Miposicion else companionLocation!!)
     }
-
-    // Función para dibujar mi ruta a la UNI
-    private fun drawRouteFromMeToUni() {
-        if (!::Miposicion.isInitialized) {
-            Toast.makeText(this, "Tu ubicación no está disponible aún.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        poly?.remove() // Limpiar ruta anterior si existe
-
-        val startPoint = "${Miposicion.longitude},${Miposicion.latitude}"
-        val endPoint = "${uniLocation.longitude},${uniLocation.latitude}"
-
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val call = getRetrofit().create(ApiService::class.java).getRoute(
-                    "5b3ce3597851110001cf624826138ef006c74296adca414c449bc21e",
-                    startPoint,
-                    endPoint
-                )
-                if (call.isSuccessful) {
-                    val routeResponse = call.body()
-                    val coordinates = routeResponse?.features?.firstOrNull()?.geometry?.coordinates
-                    if (coordinates != null) {
-                        drawRoute(coordinates)
-                    } else {
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "No se encontraron coordenadas de ruta.", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                } else {
-                    Log.e("MainActivity", "Error al obtener ruta: ${call.errorBody()?.string()}")
-                    runOnUiThread {
-                        Toast.makeText(this@MainActivity, "Error al calcular la ruta. Código: ${call.code()}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Excepción al obtener ruta: ${e.message}")
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Error de conexión al calcular la ruta.", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    // Función para dibujar ruta de un compañero a la UNI
-    private fun drawRouteFromCompanionToUni(companionLatLng: LatLng) {
-        poly?.remove() // Limpiar ruta anterior si existe
-
-        val startPoint = "${companionLatLng.longitude},${companionLatLng.latitude}"
-        val endPoint = "${uniLocation.longitude},${uniLocation.latitude}"
-
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val call = getRetrofit().create(ApiService::class.java).getRoute(
-                    "5b3ce3597851110001cf624826138ef006c74296adca414c449bc21e",
-                    startPoint,
-                    endPoint
-                )
-                if (call.isSuccessful) {
-                    val routeResponse = call.body()
-                    val coordinates = routeResponse?.features?.firstOrNull()?.geometry?.coordinates
-                    if (coordinates != null) {
-                        drawRoute(coordinates)
-                    } else {
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "No se encontraron coordenadas de ruta.", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                } else {
-                    Log.e("MainActivity", "Error al obtener ruta: ${call.errorBody()?.string()}")
-                    runOnUiThread {
-                        Toast.makeText(this@MainActivity, "Error al calcular la ruta. Código: ${call.code()}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Excepción al obtener ruta: ${e.message}")
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Error de conexión al calcular la ruta.", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    private fun drawRoute(coordinates: List<List<Double>>?) {
+    
+    // Función para dibujar línea recta a la UNI
+    private fun drawStraightLineToUni(fromLocation: LatLng) {
+        poly?.remove() // Limpiar ruta anterior
+        
         val polyLineOptions = PolylineOptions()
-            .width(10f)
-            .color(Color.BLUE)
+            .width(8f)
+            .color(Color.RED)
             .jointType(JointType.ROUND)
             .startCap(RoundCap())
             .endCap(RoundCap())
-
-        coordinates?.forEach {
-            polyLineOptions.add(LatLng(it[1], it[0]))
-        }
-        runOnUiThread {
-            poly?.remove()
-            poly = map.addPolyline(polyLineOptions)
-        }
-    }
-
-    private fun getRetrofit(): Retrofit {
-        return Retrofit.Builder()
-            .baseUrl("https://api.openrouteservice.org/")
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
+            .add(fromLocation)
+            .add(uniLocation)
+            
+        poly = map.addPolyline(polyLineOptions)
     }
 
     private fun getCurrentLocation() {
@@ -356,7 +271,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 // Sincronizar mi ubicación con Firebase en tiempo real
                 syncMyLocationToFirebase()
                 updateInfoList()
-                createMarkers() // Llamar a createMarkers aquí para añadir el marcador "Yo"
+                // Verificar que el mapa esté inicializado antes de crear marcadores
+                if (::map.isInitialized) {
+                    createMarkers() // Llamar a createMarkers aquí para añadir el marcador "Yo"
+                }
             } else {
                 Toast.makeText(applicationContext, "No se pudo obtener la ubicación", Toast.LENGTH_LONG).show()
             }
@@ -421,7 +339,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 pos?.let {
                     companionLocation = LatLng(it.latitud, it.longitud)
                     updateInfoList()
-                    createMarkers()
+                    // Verificar que el mapa esté inicializado antes de crear marcadores
+                    if (::map.isInitialized) {
+                        createMarkers()
+                    }
                 }
             }
 
