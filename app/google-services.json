@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "413160823190",
+    "project_id": "pc03-6d527",
+    "storage_bucket": "pc03-6d527.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:413160823190:android:5490f4d1be777547b225b7",
+        "android_client_info": {
+          "package_name": "com.example.mykgps_"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD6C2zH-igCvIlDUv835jGxpBnvdwUZ1PA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
